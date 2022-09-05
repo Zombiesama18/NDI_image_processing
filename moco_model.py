@@ -12,9 +12,11 @@ class MoCo(nn.Module):
         self.encoder_q = base_encoder(num_classes=dim)
         self.encoder_k = base_encoder(num_classes=dim)
         if mlp:
-            dim_mlp = self.encoder_q.weight.shape[1]
+            dim_mlp = self.encoder_q.fc.weight.shape[1]
             self.encoder_q.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_q.fc)
             self.encoder_k.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_k.fc)
+        self.encoder_q.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+        self.encoder_k.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)
             param_k.requires_grad = False
