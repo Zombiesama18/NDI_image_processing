@@ -8,11 +8,12 @@ import copy
 
 class MoCo(nn.Module):
     def __init__(self, base_encoder, dim=512, K=1024, m=0.999, T=0.07, mlp=True, model_type='resnet', pretrained=False,
-                 three_channel=False, custom_model=False):
+                 three_channel=False, custom_model=False, k_fold=False):
         super(MoCo, self).__init__()
         self.K = K
         self.m = m
         self.T = T
+        self.k_fold = k_fold
         if custom_model:
             self.encoder_q = base_encoder
             self.encoder_k = copy.deepcopy(base_encoder)
@@ -59,8 +60,12 @@ class MoCo(nn.Module):
     def _dequeue_and_enqueue(self, keys):
         batch_size = keys.shape[0]
         ptr = int(self.queue_ptr)
-        assert self.K % batch_size == 0
-        self.queue[:, ptr: ptr + batch_size] = keys.T
+        if not self.k_fold:
+            assert self.K % batch_size == 0
+            self.queue[:, ptr: ptr + batch_size] = keys.T
+        else:
+            if ptr + batch_size >= self.K:
+                self.queue[:, ptr:] = keys.T[:ptr]
         ptr = (ptr + batch_size) % self.K
         self.queue_ptr[0] = ptr
 
