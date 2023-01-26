@@ -1,18 +1,24 @@
+import random
 import torch
 from pathlib import Path
 from torchvision import transforms
 from PIL import Image
 from torch.utils.data import Dataset
 
+ORIGINAL_IMAGE = '../datasets/NDI_images/Integreted/Observed/circle_binaryzation_pics'
+TARGET_IMAGE = '../datasets/NDI_images/Integreted/Calculated/'
 
-def k_fold_split(original_path, target_path, k=5):
+
+def k_fold_train_validation_split(original_path, target_path, k=5):
     original_images = list(sorted(list(map(str, list(Path(original_path).glob('*.jpg'))))))
     target_images = list(sorted(list(map(str, list(Path(target_path).glob('*.jpg'))))))
     images = list(zip(original_images, target_images))
+    random.shuffle(images)
+    per_k = 24
     for i in range(k):
-        train = images[:i * len(images) // k] + images[(i + 1) * len(images) // k:]
-        val = images[i * len(images) // k: (i + 1) * len(images) // k]
-        yield train, val
+        train_images = images[: i * per_k] + images[(i + 1) * per_k:]
+        val_images = images[i * per_k: (i + 1) * per_k]
+        yield train_images, val_images
 
 
 def split_train_validation_randomly(original_path, target_path):
@@ -37,7 +43,7 @@ class ThreeChannelNDIDatasetContrastiveLearningWithAug(Dataset):
             # transforms.Resize(200),
             # transforms.RandomHorizontalFlip(0.5),
             # transforms.RandomRotation(30)
-            ])
+        ])
         self.evaluate = evaluate
 
     def __getitem__(self, idx):
@@ -45,7 +51,9 @@ class ThreeChannelNDIDatasetContrastiveLearningWithAug(Dataset):
         origin = Image.open(origin_path).convert('RGB')
         target = Image.open(target_path)
         if not self.evaluate:
-            origin, target = self.transforms(torch.cat((transforms.ToTensor()(origin).unsqueeze(0), transforms.ToTensor()(target).unsqueeze(0)), dim=0))
+            origin, target = self.transforms(
+                torch.cat((transforms.ToTensor()(origin).unsqueeze(0), transforms.ToTensor()(target).unsqueeze(0)),
+                          dim=0))
         else:
             origin, target = transforms.ToTensor()(origin), transforms.ToTensor()(target)
         label = int(origin_path.split('/')[-1].split('.')[0]) - 1

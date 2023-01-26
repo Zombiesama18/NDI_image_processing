@@ -7,7 +7,7 @@ import copy
 
 
 class MoCo(nn.Module):
-    def __init__(self, base_encoder, dim=512, K=1024, m=0.999, T=0.07, mlp=True, model_type='resnet', pretrained=False,
+    def __init__(self, base_encoder, dim=512, K=1024, m=0.999, T=0.07, mlp=True, model_type='resnet', weights=None,
                  three_channel=False, custom_model=False, k_fold=False):
         super(MoCo, self).__init__()
         self.K = K
@@ -21,15 +21,15 @@ class MoCo(nn.Module):
             assert self.encoder_q(test_input).shape[-1] == dim, \
                 "Last dimension of custom model must be equal to param dim"
         else:
-            if pretrained:
-                self.encoder_q = base_encoder(pretrained=pretrained)
-                self.encoder_k = base_encoder(pretrained=pretrained)
+            if weights:
+                self.encoder_q = base_encoder(weights=weights)
+                self.encoder_k = base_encoder(weights=weights)
                 if model_type == 'resnet':
                     self.encoder_q.fc = nn.Linear(self.encoder_q.fc.in_features, dim)
                     self.encoder_k.fc = nn.Linear(self.encoder_k.fc.in_features, dim)
             else:
-                self.encoder_q = base_encoder(num_classes=dim, pretrained=pretrained)
-                self.encoder_k = base_encoder(num_classes=dim, pretrained=pretrained)
+                self.encoder_q = base_encoder(num_classes=dim, weights=weights)
+                self.encoder_k = base_encoder(num_classes=dim, weights=weights)
             if mlp:
                 if model_type == 'resnet':
                     dim_mlp = self.encoder_q.fc.weight.shape[1]
