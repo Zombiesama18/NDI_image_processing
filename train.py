@@ -90,7 +90,7 @@ def image_pair_matching(net, original_image, matching_image):
 
 
 def train_moco_return_metrics_top_k(net, train_iter, val_iter, criterion, optimizer, epochs, device, tested_parameter,
-                                    k_candidates=(10,)):
+                                    k_candidates=(10,), scheduler=None):
     # train_metrics = HistoryRecorder(['Train Loss', 'Train Acc', 'Val Loss', 'Val Acc'], [list, dict, list, dict])
 
     to_tensor_func = torchvision.transforms.ToTensor()
@@ -125,6 +125,7 @@ def train_moco_return_metrics_top_k(net, train_iter, val_iter, criterion, optimi
                                                          top_k=k_candidates)):
                     training_correct[k] += correct
                 training_size += origin.shape[0]
+        scheduler.step()
         net.eval()
         with torch.no_grad():
             val_loss = 0
@@ -210,6 +211,7 @@ def draw_graph(metrics, num_epochs: int, metrics_name: (list, tuple)):
         axes[i].set_title(
             f'Training result when ' + ', '.join([f'{name} = {value}' for name, value in zip(metrics_name, k)]))
     plt.show()
+    plt.savefig(f'{metrics_name}.png')
 
 
 def train_sample():

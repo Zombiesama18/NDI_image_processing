@@ -5,7 +5,7 @@ from torchvision import transforms
 from PIL import Image
 from torch.utils.data import Dataset
 
-ORIGINAL_IMAGE = '../datasets/NDI_images/Integreted/Observed/circle_binaryzation_pics'
+ORIGINAL_IMAGE = '../datasets/NDI_images/Integreted/Observed/'
 TARGET_IMAGE = '../datasets/NDI_images/Integreted/Calculated/'
 
 
