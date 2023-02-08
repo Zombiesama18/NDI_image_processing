@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision.models import ResNet50_Weights
 
 from dataset import *
-from moco_model import MoCo
+from moco_model import MoCo, RetrievalModel
 
 
 class HistoryRecorder:
@@ -67,15 +67,17 @@ class HistoryRecorder:
 
 
 def cal_accuracy_top_k(preds, label, top_k=(1,)):
-    result = []
-    max_k = max(top_k)
-    sample_num = preds.shape[0]
-    pred_scores, pred_labels = preds.topk(max_k, dim=1)
-    pred_labels = pred_labels.t()
-    correct = pred_labels.eq(label.view(1, -1).expand_as(pred_labels))
-    for k in top_k:
-        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-        result.append(correct_k.item())
+    with torch.no_grad():
+        result = []
+        max_k = max(top_k)
+        sample_num = preds.shape[0]
+        pred_scores, pred_labels = preds.topk(max_k, 1, True, True)
+        pred_labels = pred_labels.t()
+        correct = pred_labels.eq(label.view(1, -1).expand_as(pred_labels))
+        for k in top_k:
+            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+            result.append(correct_k.item())
+            # result.append(correct_k.mul_(100.0 / sample_num))
     return result
 
 
@@ -84,22 +86,42 @@ def image_pair_matching(net, original_image, matching_image):
     q = net.encoder_q(original_image)
     q = f.normalize(q, dim=1)
     k = net.encoder_k(matching_image)
+    # Bad Effect
+    # k = net.encoder_q(matching_image)
     k = f.normalize(k, dim=1)
     logits = torch.einsum('nc,ck->nk', [q, k.T])
     return logits
 
-
-def train_moco_return_metrics_top_k(net, train_iter, val_iter, criterion, optimizer, epochs, device, tested_parameter,
-                                    k_candidates=(10,), scheduler=None):
-    # train_metrics = HistoryRecorder(['Train Loss', 'Train Acc', 'Val Loss', 'Val Acc'], [list, dict, list, dict])
-
+def get_CNI_tensor(target_image_path, device=None):
     to_tensor_func = torchvision.transforms.ToTensor()
     target_tensor = []
     for i in range(1, 185):
         target_tensor.append(
-            to_tensor_func(Image.open(str(Path.joinpath(Path(TARGET_IMAGE), f'{i}.jpg')))).unsqueeze(0))
+            to_tensor_func(Image.open(str(Path.joinpath(Path(TARGET_IMAGE), f'{i}.jpg'))).convert('L')).unsqueeze(0))
     target_tensor = torch.cat(target_tensor, dim=0)
-    target_tensor = target_tensor.cuda(device)
+    if device:
+        return target_tensor.to(device)
+    return target_tensor
+
+def train_batch(net, observed, calculated, label, optimizer, criterion=None, device=None):
+    if device:
+        observed, calculated, label = observed.to(device), calculated.to(device), label.to(device)
+    em_q, em_k = net(observed, calculated)
+    if criterion:
+        loss = criterion(em_q, em_k)
+    else:
+        sim_matrix = net.get_similarity_matrix(em_q, em_k)
+        loss = net.compute_loss(sim_matrix)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+def train_moco_return_metrics_top_k(net, train_iter, val_iter, optimizer, epochs, device, tested_parameter, criterion=None,
+                                    k_candidates=(10,), scheduler=None):
+    # train_metrics = HistoryRecorder(['Train Loss', 'Train Acc', 'Val Loss', 'Val Acc'], [list, dict, list, dict])
+    
+    target_tensor = get_CNI_tensor(TARGET_IMAGE, device=device)
     train_loss_record = []
     train_acc_record = {k: [] for k in k_candidates}
     val_loss_record = []
@@ -111,29 +133,27 @@ def train_moco_return_metrics_top_k(net, train_iter, val_iter, criterion, optimi
         training_size = 0
         for origin, target, label in train_iter:
             net.train()
-            origin, target, label = origin.cuda(device), target.cuda(device), label.cuda(device)
-            output, labels = net(origin, target)
-            loss = criterion(output, labels)
-            total_loss += loss.item()
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            total_loss += train_batch(net, origin, target, label, optimizer, device=device)
             net.eval()
             with torch.no_grad():
                 for k, correct in zip(k_candidates,
-                                      cal_accuracy_top_k(image_pair_matching(net, origin, target_tensor), label,
+                                      cal_accuracy_top_k(image_pair_matching(net, origin.to(device), target_tensor), label.to(device),
                                                          top_k=k_candidates)):
                     training_correct[k] += correct
                 training_size += origin.shape[0]
-        scheduler.step()
+        if scheduler:
+            scheduler.step()
         net.eval()
         with torch.no_grad():
             val_loss = 0
             val_correct = collections.defaultdict(int)
             for origin, target, label in val_iter:
                 origin, target, label = origin.cuda(device), target.cuda(device), label.cuda(device)
-                output, labels = net(origin, target, evaluate=True)
-                val_loss += f.cross_entropy(output, labels).item()
+                # output, labels = net(origin, target, evaluate=True)
+                # val_loss += f.cross_entropy(output, labels).item()
+                em_q, em_k = net(origin, target)
+                sim_matrix = net.get_similarity_matrix(em_q, em_k)
+                val_loss += net.compute_loss(sim_matrix).item()
                 for k, correct in zip(k_candidates,
                                       cal_accuracy_top_k(image_pair_matching(net, origin, target_tensor), label,
                                                          top_k=k_candidates)):
@@ -188,7 +208,7 @@ def fmts_gen():
 
 def draw_graph(metrics, num_epochs: int, metrics_name: (list, tuple)):
     X = np.arange(1, num_epochs + 1, 1)
-    fig, axes = plt.subplots((len(metrics) + 1) // 2, 2, figsize=(15, 20))
+    fig, axes = plt.subplots((len(metrics) + 1) // 2, 2, figsize=(15, 4 * (len(metrics) + 1) // 2))
     if hasattr(axes, 'flatten'):
         axes = axes.flatten()
     else:
@@ -245,3 +265,4 @@ def train_sample():
             end_time = time.time()
             train_metrics.cal_add(metrics)
     train_metrics.cal_divide(k)
+
