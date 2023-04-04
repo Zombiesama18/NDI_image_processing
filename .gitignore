@@ -1,1 +1,7 @@
-.idea
+.idea/
+checkpoints/
+logs/
+wandb/
+results/
+offline_exec/
+
