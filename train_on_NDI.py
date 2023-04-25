@@ -12,6 +12,7 @@ import torchvision.models
 from models.vit_model import vit_tiny, vit_base, vit_large, vit_small
 from models.core_model import RetrievalModel
 from timm.models import create_model
+from timm.models.swin_transformer_v2 import PatchEmbed
 from utils import get_logger, AverageMeter, ProgressMeter, set_all_seeds, get_wandb_API_key, cal_accuracy_top_k
 import os
 import datetime
@@ -24,10 +25,10 @@ from torch.utils.data import DataLoader
 def get_args_parser():
     parser = argparse.ArgumentParser('Fine-tuning on NDI images', add_help=False)
     parser.add_argument('--batch_size', default=32, type=int, help='Batch size per GPU')
-    parser.add_argument('--epochs', default=30, type=int)
+    parser.add_argument('--epochs', default=50, type=int)
 
     # Model parameters
-    parser.add_argument('--model', default='mae_vit_large_patch16', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='swin_base', type=str, metavar='MODEL',
                         help='Name of model to train')
 
     parser.add_argument('--input_size', default=224, type=int,
@@ -43,8 +44,11 @@ def get_args_parser():
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                         help='weight decay (default: 0.05)')
 
-    parser.add_argument('--lr', type=float, default=5e-2, metavar='LR',
+    parser.add_argument('--lr', type=float, default=5e-3, metavar='LR',
                         help='learning rate (absolute lr)')
+    
+    parser.add_argument('--momentum', type=float, default=0.9,
+                        help='momentum of SGD')
 
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cosine schedulers that hit 0')
@@ -59,7 +63,7 @@ def get_args_parser():
     parser.add_argument('--seed', default=19981303, type=int)
 
     # Wandb Parameters
-    parser.add_argument('--project', default='Test which ViT suits NDI images best', type=str,
+    parser.add_argument('--project', default='Test which Swin suits NDI images best', type=str,
                         help="The name of the W&B project where you're sending the new run.")
 
     return parser
@@ -80,12 +84,15 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def init_wandb():
+def init_wandb(config=None, **kwargs):
+    if config is None:
+        config = dict()
     wandb.login(key=get_wandb_API_key())
+    wandb.init(config=config, **kwargs)
 
 
 def get_model(key_word, pretrained=False):
-    assert key_word in ['vit_tiny', 'vit_small', 'vit_base', 'vit_large', 'ResNet50', 'convnext_base', 'convnext_small']
+    assert key_word in ['vit_tiny', 'vit_small', 'vit_base', 'vit_large', 'ResNet50', 'convnext_base', 'convnext_small', 'swin_tiny', 'swin_base', 'swin_tiny']
     if key_word == 'vit_tiny':
         return vit_tiny(pretrained=pretrained, num_classes=0, in_chans=1)
     if key_word == 'vit_small':
@@ -110,19 +117,28 @@ def get_model(key_word, pretrained=False):
         model.stem[0] = nn.Conv2d(1, 96, kernel_size=4, stride=4)
         model.head.fc = nn.Identity()
         return model
+    if key_word == 'swin_base':
+        model = timm.create_model('swinv2_base_window12_192_22k', pretrained=True)
+        model.patch_embed = PatchEmbed(img_size=192, patch_size=4, in_chans=1, embed_dim=128, norm_layer=nn.LayerNorm)
+        model.head = nn.Linear(1024, 512, bias=True)
+        return model
+    if key_word == 'swin_tiny':
+        model = timm.create_model('swinv2_tiny_window16_256', pretrained=True)
+        model.patch_embed = PatchEmbed(img_size=256, patch_size=4, in_chans=1, embed_dim=96, norm_layer=nn.LayerNorm)
+        model.head = nn.Linear(768, 512, bias=True)
+        return model
 
 
 def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch, total_epoch, target_tensor):
     batch_time = AverageMeter('Batch Time', ':6.3f')
     data_time = AverageMeter('Data Time', ':6.3f')
     train_loss = AverageMeter('Train Loss', ':.4e')
-    train_acc_10 = AverageMeter('Train Acc@10', ':6.2f')
     val_loss = AverageMeter('Val Loss', ':.4e')
     val_acc_10 = AverageMeter('Val Acc@10', ':6.2f')
     val_acc_20 = AverageMeter('Val Acc@20', ':6.2f')
     val_acc_30 = AverageMeter('Val Acc@30', ':6.2f')
 
-    train_progress = ProgressMeter(len(train_data), [batch_time, data_time, train_loss, train_acc_10],
+    train_progress = ProgressMeter(len(train_data), [batch_time, data_time, train_loss],
                                    prefix=f'Training Progress\tEpoch: [{current_epoch}/{total_epoch}]')
     val_progress = ProgressMeter(len(val_data), [val_loss, val_acc_10, val_acc_20, val_acc_30],
                                  prefix=f'Validation Progress\tEpoch: [{current_epoch}/{total_epoch}]')
@@ -138,11 +154,8 @@ def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch
         loss1 = criterion(sim_mat, torch.arange(0, origin.size(0)).cuda())
         loss2 = criterion(sim_mat.t(), torch.arange(0, origin.size(0)).cuda())
         loss = loss1 + loss2
-        acc_10 = cal_accuracy_top_k(sim_mat, torch.arange(0, origin.size(0)).cuda(), top_k=(10,))[0]
 
         train_loss.update(loss.item(), origin.size(0))
-        train_acc_10.update(acc_10.item(), origin.size(0))
-
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -172,17 +185,17 @@ def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch
 
         val_progress.display(i)
 
-    return train_loss.avg, train_acc_10.avg, val_loss.avg, val_acc_10.avg, val_acc_20.avg, val_acc_30.avg
+    return train_loss.avg, val_loss.avg, val_acc_10.avg, val_acc_20.avg, val_acc_30.avg
 
 
 def train(args, logger, train_data, val_data, model, criterion, optimizer, total_epochs, save_folder='./',
           scheduler=None, wandb_config=None, device=None):
     best_score = 0.
 
-    target_tensor = get_CNI_tensor(device, 224)
+    target_tensor = get_CNI_tensor(device, 200)
 
     for epoch in range(total_epochs):
-        train_loss, train_acc_10, val_loss, val_acc_10, val_acc_20, val_acc_30 = \
+        train_loss, val_loss, val_acc_10, val_acc_20, val_acc_30 = \
             train_epoch(train_data, val_data, model, criterion, optimizer, epoch + 1, total_epochs, target_tensor)
 
         lr_info = ''
@@ -190,29 +203,29 @@ def train(args, logger, train_data, val_data, model, criterion, optimizer, total
             lr_info = f'lr {scheduler.get_last_lr()}'
             scheduler.step()
 
-        logger.info(f'Epoch: [{epoch}/{total_epochs}], train loss {train_loss}, train acc @ 10 {train_acc_10}, '
+        logger.info(f'Epoch: [{epoch}/{total_epochs}], train loss {train_loss}, '
                     f'val loss {val_loss}, val acc @ 10 {val_acc_10}, val acc @ 20 {val_acc_20}, '
                     f'val acc @ 30 {val_acc_30}' + lr_info)
 
         if wandb_config:
-            wandb.log({'epoch': epoch + 1, 'train/train loss': train_loss, 'train/train acc @ 10': train_acc_10,
+            wandb.log({'epoch': epoch + 1, 'train/train loss': train_loss,
                        'val/val loss': val_loss, 'val/val acc @ 10': val_acc_10, 'val/val acc @ 20': val_acc_20,
                        'val/val acc @ 30': val_acc_30})
 
-        if val_acc_10 > best_score:
-            best_score = val_acc_10
-            checkpoint_to_save = {'epoch': epoch + 1, 'state_dict': model.state_dict(),
-                                  'optimizer': optimizer.state_dict}
-            if scheduler:
-                checkpoint_to_save.update(scheduler=scheduler.state_dict())
-            if wandb_config:
-                filename = args.project + f'epoch {epoch + 1}'
-            else:
-                filename = datetime.datetime.now().strftime('%Y%m%d%H%M')
-            save_checkpoint(checkpoint_to_save, filename=save_folder + filename)
-            logger.info(f'Save Checkpoint at {epoch + 1} with train loss {train_loss}, train acc @ 10 {train_acc_10}, '
-                        f'val loss {val_loss}, val acc @ 10 {val_acc_10}, val acc @ 20 {val_acc_20}, '
-                        f'val acc @ 30 {val_acc_30}' + lr_info)
+        # if val_acc_10 > best_score:
+        #     best_score = val_acc_10
+        #     checkpoint_to_save = {'epoch': epoch + 1, 'state_dict': model.state_dict(),
+        #                           'optimizer': optimizer.state_dict}
+        #     if scheduler:
+        #         checkpoint_to_save.update(scheduler=scheduler.state_dict())
+        #     if wandb_config:
+        #         filename = args.project + f'epoch {epoch + 1}'
+        #     else:
+        #         filename = datetime.datetime.now().strftime('%Y%m%d%H%M')
+        #     save_checkpoint(checkpoint_to_save, filename=save_folder + filename)
+        #     logger.info(f'Save Checkpoint at {epoch + 1} with train loss {train_loss}, '
+        #                 f'val loss {val_loss}, val acc @ 10 {val_acc_10}, val acc @ 20 {val_acc_20}, '
+        #                 f'val acc @ 30 {val_acc_30}' + lr_info)
 
     logger.info('Training Finished!')
 
@@ -232,35 +245,33 @@ def main():
     logger_fname = datetime.datetime.now().strftime('%Y%m%d%H%M')
     logger = get_logger(f'./logs/{logger_fname}.log')
 
-    init_wandb()
-
     logger.info(f'This training is to do: {args.project}')
 
-    model_list = ['convnext_small']
+    model_list = ['ResNet50']
     # model_list = ['vit_tiny', 'vit_small', 'vit_base', 'vit_large']
 
-    for model in model_list:
-        wandb.init(project=args.project, name=model, config=args.__dict__)
-        logger.info('Wandb Initialized Successfully')
-        for images in k_fold_train_validation_split(ORIGINAL_IMAGE, TARGET_IMAGE, 1):
-            train_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, False, 224)
-            val_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, True, 224)
+    for model_name in model_list:
+        for i, images in enumerate(k_fold_train_validation_split(ORIGINAL_IMAGE, TARGET_IMAGE, 7)):
+            wandb.init(project=args.project, group='Re_implementation', job_type=f'{model_name}_original_setting',
+                       name=f'{model_name}_fold {i}', config=args.__dict__)
+            train_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, False, 200)
+            val_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, True, 200)
             train_iter = DataLoader(train_dataset, args.batch_size, shuffle=True, drop_last=True)
             val_iter = DataLoader(val_dataset, batch_size=len(val_dataset))
 
-            model = get_model(model, pretrained=True)
+            model = get_model(model_name, pretrained=True)
             model = RetrievalModel(model)
             model = model.cuda()
 
-            optimizer = torch.optim.SGD(params=model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+            optimizer = torch.optim.SGD(params=model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=args.momentum)
             criterion = nn.CrossEntropyLoss()
 
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs,
-                                                                   eta_min=args.lr * 0.001)
+            # scheduler = None
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
 
             train(args, logger, train_iter, val_iter, model, criterion, optimizer, args.epochs, scheduler=scheduler,
                   save_folder=args.output_dir, wandb_config=True, device=device)
-
+            wandb.finish()
 
 if __name__ == '__main__':
     main()
