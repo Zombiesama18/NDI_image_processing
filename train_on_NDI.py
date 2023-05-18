@@ -1,5 +1,5 @@
 import time
-
+from config import Config
 import timm
 import torch
 import numpy as np
@@ -13,7 +13,7 @@ from models.vit_model import vit_tiny, vit_base, vit_large, vit_small
 from models.core_model import RetrievalModel
 from timm.models import create_model
 from timm.models.swin_transformer_v2 import PatchEmbed
-from utils import get_logger, AverageMeter, ProgressMeter, set_all_seeds, get_wandb_API_key, cal_accuracy_top_k
+from utils import get_logger, AverageMeter, ProgressMeter, set_all_seeds, get_wandb_API_key, cal_accuracy_top_k, load_checkpoints
 import os
 import datetime
 import wandb
@@ -105,7 +105,7 @@ def get_model(key_word, pretrained=False):
         # Set ResNet50 for clarifying the effectiveness of Code
         model = torchvision.models.resnet50()
         model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        model.fc = nn.Identity()
+        model.fc = nn.Linear(model.fc.in_features, 512)
         return model
     if key_word == 'convnext_base':
         model = timm.create_model('convnext_base_in22ft1k', pretrained=True)
@@ -235,8 +235,9 @@ def save_checkpoint(state, filename='checkpoint.pth'):
 
 
 def main():
-    parser = argparse.ArgumentParser('Fine-tuning on NDI images', parents=[get_args_parser()])
-    args = parser.parse_args()
+    args = Config()
+    # parser = argparse.ArgumentParser('Fine-tuning on NDI images', parents=[get_args_parser()])
+    # args = parser.parse_args()
 
     device = torch.device(args.device)
 
@@ -245,14 +246,14 @@ def main():
     logger_fname = datetime.datetime.now().strftime('%Y%m%d%H%M')
     logger = get_logger(f'./logs/{logger_fname}.log')
 
-    logger.info(f'This training is to do: {args.project}')
+    logger.info(f'This training is to do: {args.message_to_log}')
 
     model_list = ['ResNet50']
     # model_list = ['vit_tiny', 'vit_small', 'vit_base', 'vit_large']
 
     for model_name in model_list:
         for i, images in enumerate(k_fold_train_validation_split(ORIGINAL_IMAGE, TARGET_IMAGE, 7)):
-            wandb.init(project=args.project, group='Re_implementation', job_type=f'{model_name}_original_setting',
+            wandb.init(project=args.message_to_log, group='Re_implementation', job_type=f'{model_name}_original_setting',
                        name=f'{model_name}_fold {i}', config=args.__dict__)
             train_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, False, 200)
             val_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, True, 200)
@@ -260,14 +261,15 @@ def main():
             val_iter = DataLoader(val_dataset, batch_size=len(val_dataset))
 
             model = get_model(model_name, pretrained=True)
+            model = load_checkpoints(model, './checkpoints/ImageNet_ALL_CHECK_400_Epoch.pth')
             model = RetrievalModel(model)
             model = model.cuda()
 
-            optimizer = torch.optim.SGD(params=model.parameters(), lr=args.lr, weight_decay=args.weight_decay, momentum=args.momentum)
+            optimizer = torch.optim.SGD(params=model.parameters(), lr=args.base_lr, weight_decay=args.weight_decay, momentum=args.momentum)
             criterion = nn.CrossEntropyLoss()
 
             # scheduler = None
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=args.base_lr * 0.01)
 
             train(args, logger, train_iter, val_iter, model, criterion, optimizer, args.epochs, scheduler=scheduler,
                   save_folder=args.output_dir, wandb_config=True, device=device)

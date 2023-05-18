@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision.models import ResNet50_Weights
 
 from dataset import *
-from moco_model import MoCo, RetrievalModel
+from models.moco_model import MoCo, RetrievalModel
 
 
 class HistoryRecorder:

@@ -267,3 +267,14 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def load_checkpoints(base_encoder, ckpt_path):
+    temp = torch.load(ckpt_path)['state_dict']
+    state_dict = {}
+    for k, v in temp.items():
+        if 'encoder_q' in k:
+            if 'fc' not in k:
+                state_dict['.'.join(k.split('.')[1:])] = v
+    base_encoder.load_state_dict(state_dict, strict=False)
+    return base_encoder

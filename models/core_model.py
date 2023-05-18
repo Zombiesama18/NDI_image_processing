@@ -13,8 +13,8 @@ class RetrievalModel(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * (1 / T))
 
     def forward(self, im_q, im_k, **kwargs):
-        q = self.encoder_q(im_q)
-        k = self.encoder_k(im_k)
+        q = self.encoder_q(im_q, **kwargs)
+        k = self.encoder_k(im_k, **kwargs)
         return q, k
 
     def get_similarity_matrix(self, em_q, em_k):
