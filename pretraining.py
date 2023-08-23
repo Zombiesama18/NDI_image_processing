@@ -16,6 +16,7 @@ import argparse
 import yaml
 import os
 import wandb
+import unicom
 
 
 def get_args_parser():
@@ -35,7 +36,7 @@ def get_args_parser():
     parser.add_argument('--model', default='resnet50_imagenet21k', type=str, metavar='MODEL',
                         help='Name of model to train')
 
-    parser.add_argument('--input_size', default=200, type=int,
+    parser.add_argument('--input_size', default=224, type=int,
                         help='images input size')
 
     # Optimizer parameters
@@ -71,7 +72,7 @@ def get_args_parser():
 
 def init_wandb(args):
     wandb.login(key=get_wandb_API_key())
-    wandb.init(project=args.project, name=args.model, config=args.__dict__)
+    wandb.init(project=args.project, name='UNICOM_VIT_B_32', config=args.__dict__)
 
 
 def train(train_loader, model, criterion, optimizer, epoch):
@@ -90,7 +91,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
     for i, images in enumerate(train_loader):
         data_time.update(time.time() - start)
-        x1, x2 = torch.split(images, [1, 1], dim=1)
+        x1, x2 = torch.split(images, [images.size(1) // 2, images.size(1) // 2], dim=1)
         x1 = x1.cuda()
         x2 = x2.cuda()
         output, target = model(im_q=x1, im_k=x2)
@@ -134,11 +135,13 @@ def get_pretrain_model(model_path):
 
 
 def get_imagenet_model():
-    base_encoder = torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
-    base_encoder.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
-    origin_dim_mlp = base_encoder.fc.in_features
-    base_encoder.fc = torch.nn.Linear(origin_dim_mlp, 512)
+    base_encoder = unicom.load('ViT-B/32')[0]
     return base_encoder
+    # base_encoder = torchvision.models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+    # base_encoder.conv1 = torch.nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+    # origin_dim_mlp = base_encoder.fc.in_features
+    # base_encoder.fc = torch.nn.Linear(origin_dim_mlp, 512)
+    # return base_encoder
 
 
 def get_raw_model():
@@ -199,7 +202,7 @@ def main():
                                                                last_epoch=start_epoch)
         scheduler.load_state_dict(state_dict['scheduler'])
 
-    model = MoCo(model, dim=512, K=1024, m=0.999, T=0.2, mlp=True, customized_model=True)
+    model = MoCo(model, dim=512, K=1024, m=0.999, T=0.2, mlp=False, customized_model=True)
     model.cuda()
 
     criterion = nn.CrossEntropyLoss().cuda(device)
@@ -213,11 +216,11 @@ def main():
          transforms.RandomResizedCrop(input_size, scale=(
              0.2, 1.)), transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
          transforms.RandomApply(
-             [GaussianBlur([.1, 2.])], p=0.5), transforms.Grayscale(1),
+             [GaussianBlur([.1, 2.])], p=0.5), transforms.Grayscale(3),
          transforms.RandomHorizontalFlip(), transforms.RandomVerticalFlip(), transforms.ToTensor(),
          GaussNoise(p=0.5), normalize])
 
-    all_images_datasets = NDIDatasetForPretraining(all_images, augmentation)
+    all_images_datasets = NDIDatasetForPretraining(all_images, augmentation, img_type='RGB')
     all_images_dataloader = DataLoader(
         all_images_datasets, batch_size=batch_size, shuffle=True, drop_last=True)
 
@@ -239,14 +242,14 @@ def main():
             save_checkpoint({'epoch': epoch + 1, 'arch': 'ResNet50', 'state_dict': model.state_dict(),
                              'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
                              'norms': [all_mean, all_std]},
-                            filename='./checkpoints/Raw_ALL_CHECK.pth')
+                            filename='./checkpoints/UNICOM_ViT_B_32_based.pth')
             logger.info(
                     f'Save Checkpoint at {epoch + 1} with loss {loss}, Acc@1 {acc1}, Acc@5 {acc5}, score {score}')
         if (epoch + 1) % args.save_steps == 0:
             save_checkpoint({'epoch': epoch + 1, 'arch': 'ResNet50', 'state_dict': model.state_dict(),
                              'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
                              'norms': [all_mean, all_std]},
-                            filename=f'./checkpoints/Raw_ALL_CHECK_{epoch + 1}_Epoch.pth')
+                            filename=f'./checkpoints/UNICOM_ViT_B_32_{epoch + 1}_Epoch.pth')
             logger.info(
                     f'Save Checkpoint at {epoch + 1} with loss {loss}, Acc@1 {acc1}, Acc@5 {acc5}, score {score}')
     logger.info('Training Finished!')

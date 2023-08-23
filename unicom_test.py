@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader
 import unicom
 
 
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Fine-tuning on NDI images', add_help=False)
     parser.add_argument('--batch_size', default=32, type=int, help='Batch size per GPU')
@@ -111,6 +112,7 @@ def get_model(key_word, pretrained=False):
         return model
 
 
+
 def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch, total_epoch, target_tensor):
     batch_time = AverageMeter('Batch Time', ':6.3f')
     data_time = AverageMeter('Data Time', ':6.3f')
@@ -174,7 +176,7 @@ def train(args, logger, train_data, val_data, model, criterion, optimizer, total
           scheduler=None, wandb_config=None, device=None):
     best_score = 0.
 
-    target_tensor = get_CNI_tensor(device, 200)
+    target_tensor = get_CNI_tensor(device, 224, img_type='RGB')
 
     for epoch in range(total_epochs):
         train_loss, val_loss, val_acc_10, val_acc_20, val_acc_30 = \
@@ -230,35 +232,36 @@ def main():
 
     logger.info(f'This training is to do: {args.message_to_log}')
 
-    model_list = ['ResNet50']
-    notes = ['NDI']
+    model_list = [0]
+    notes = [0]
     # model_list = ['vit_tiny', 'vit_small', 'vit_base', 'vit_large']
 
     for model_name, note in itertools.product(model_list, notes):
         for i, images in enumerate(k_fold_train_validation_split(ORIGINAL_IMAGE, TARGET_IMAGE, 7)):
-            wandb.init(project=args.message_to_log, group='Re_implementation', job_type=f'ResNet50_NDI_top_5_10_15',
-                       name=f'pretrain_{note}_fold {i}', config=args.__dict__)
-            train_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, False, 200)
-            val_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, True, 200)
+            wandb.init(project=args.message_to_log, group='ViT-B/32', job_type=f'fine_tuning_contrastive_based',
+                       name=f'fold {i}', config=args.__dict__)
+            train_dataset = ThreeChannelNDIDataset(images, False, 224)
+            val_dataset = ThreeChannelNDIDataset(images, True, 224)
             train_iter = DataLoader(train_dataset, args.batch_size, shuffle=True, drop_last=True)
             val_iter = DataLoader(val_dataset, batch_size=len(val_dataset))
 
-            if note == 'RAW':
-                model = get_model(model_name, pretrained=False)
-            elif note == 'IMAGENET':
-                model = get_model(model_name, pretrained=True)
-            elif note == 'NDI':
-                model = get_model(model_name, pretrained=True)
-                model = load_checkpoints(model, './checkpoints/ImageNet_ALL_CHECK_400_Epoch.pth')
-            elif note == 'NDI_RAW':
-                model = get_model(model_name, pretrained=True)
-                model = load_checkpoints(model, './checkpoints/Raw_ALL_CHECK_100_Epoch.pth')
-            # model = get_model(model_name, pretrained=True)
-            # model = load_checkpoints(model, f'./checkpoints/ImageNet_ALL_CHECK_{note}_Epoch.pth')
+            # if note == 'RAW':
+            #     model = get_model(model_name, pretrained=False)
+            # elif note == 'IMAGENET':
+            #     model = get_model(model_name, pretrained=True)
+            # elif note == 'NDI':
+            #     model = get_model(model_name, pretrained=True)
+            #     model = load_checkpoints(model, './checkpoints/ImageNet_ALL_CHECK_400_Epoch.pth')
+            # elif note == 'NDI_RAW':
+            #     model = get_model(model_name, pretrained=True)
+            #     model = load_checkpoints(model, './checkpoints/Raw_ALL_CHECK_100_Epoch.pth')
+            model = unicom.load('ViT-B/32')[0]
+            model = get_model('ViT-B/32', pretrained=True)
+            model = load_checkpoints(model, './checkpoints/UNICOM_ViT_B_32_based.pth')
             model = RetrievalModel(model)
             model = model.cuda()
 
-            optimizer = torch.optim.SGD(params=model.parameters(), lr=args.base_lr, weight_decay=args.weight_decay, momentum=args.momentum)
+            optimizer = torch.optim.AdamW(params=model.parameters(), betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01)
             criterion = nn.CrossEntropyLoss()
 
             # scheduler = None

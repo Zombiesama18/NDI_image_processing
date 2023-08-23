@@ -70,6 +70,38 @@ class SingleChannelNDIDatasetContrastiveLearningWithAug(Dataset):
         return len(self.images)
 
 
+class ThreeChannelNDIDataset(Dataset):
+    def __init__(self, images, evaluate=False, target_size=200):
+        super(ThreeChannelNDIDataset, self).__init__()
+        if not evaluate:
+            self.images = images[0]
+        else:
+            self.images = images[1]
+        self.train_transforms = transforms.Compose([
+            transforms.Resize(target_size)
+        ])
+        self.eval_transforms = transforms.Compose([
+            transforms.Resize(target_size),
+            transforms.ToTensor()
+        ])
+        self.evaluate = evaluate
+
+    def __getitem__(self, idx):
+        origin_path, target_path = self.images[idx]
+        origin = Image.open(origin_path).convert('RGB')
+        target = Image.open(target_path).convert('RGB')
+        if not self.evaluate:
+            origin, target = self.train_transforms(
+                torch.cat((transforms.ToTensor()(origin).unsqueeze(0), transforms.ToTensor()(target).unsqueeze(0)),
+                          dim=0))
+        else:
+            origin, target = self.eval_transforms(origin), self.eval_transforms(target)
+        label = int(origin_path.split('/')[-1].split('.')[0]) - 1
+        return origin, target, label
+
+    def __len__(self):
+        return len(self.images)
+
 def get_pretraining_image_list(origin_path, extra_path, target_path):
     all_images = list(map(str, Path(origin_path).glob('*.jpg')))
     all_images.extend(list(map(str, Path(extra_path).glob('*.jpg'))))
@@ -81,7 +113,7 @@ def get_pretraining_image_list(origin_path, extra_path, target_path):
 
 
 class NDIDatasetForPretraining(Dataset):
-    def __init__(self, images, transforms, grayscale=True, weight_gamma=None) -> None:
+    def __init__(self, images, transforms, grayscale=True, weight_gamma=None, img_type='L') -> None:
         super().__init__()
         self.images = images
         if weight_gamma is not None and isinstance(images, dict):
@@ -89,6 +121,7 @@ class NDIDatasetForPretraining(Dataset):
         else:
             self.weights = None
         self.transforms = transforms
+        self.img_type = img_type
     
     def _example_weights(img_path_dict, gamma=0.3):
         counts = np.array([len(paths) for paths in img_path_dict.values()])
@@ -110,7 +143,10 @@ class NDIDatasetForPretraining(Dataset):
     
     def __getitem__(self, index):
         file = self.images[index]
-        image = Image.open(file)
+        if self.img_type == 'L':
+            image = Image.open(file).convert('L')
+        else:
+            image = Image.open(file).convert('RGB')
         image1 = self.transforms(image)
         image2 = self.transforms(image)
         return torch.cat([image1, image2], dim=0)
@@ -138,15 +174,19 @@ class GaussNoise:
         return image
 
 
-def get_CNI_tensor(device=None, target_size=200):
+def get_CNI_tensor(device=None, target_size=200, img_type='L'):
     transform = transforms.Compose([
         transforms.Resize(target_size),
         transforms.ToTensor()
     ])
     target_tensor = []
     for i in range(1, 185):
-        target_tensor.append(
-            transform(Image.open(str(Path.joinpath(Path(TARGET_IMAGE), f'{i}.jpg'))).convert('L')).unsqueeze(0))
+        if img_type == 'L':
+            target_tensor.append(
+                transform(Image.open(str(Path.joinpath(Path(TARGET_IMAGE), f'{i}.jpg'))).convert('L')).unsqueeze(0))
+        else:
+            target_tensor.append(
+                transform(Image.open(str(Path.joinpath(Path(TARGET_IMAGE), f'{i}.jpg'))).convert('RGB')).unsqueeze(0))
     target_tensor = torch.cat(target_tensor, dim=0)
     if device:
         return target_tensor.to(device)

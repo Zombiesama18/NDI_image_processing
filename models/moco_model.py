@@ -18,7 +18,7 @@ class MoCo(nn.Module):
         if customized_model:
             self.encoder_q = base_encoder
             self.encoder_k = copy.deepcopy(base_encoder)
-            test_input = torch.rand((1, 1, 200, 200))
+            test_input = torch.randn((2, 3, 224, 224))
             assert self.encoder_q(test_input).shape[-1] == dim, \
                 "Last dimension of custom model must be equal to param dim"
         else:
