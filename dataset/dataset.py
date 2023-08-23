@@ -5,7 +5,6 @@ from torchvision import transforms
 from PIL import Image, ImageFilter
 from torch.utils.data import Dataset
 import numpy as np
-import torchvision
 
 
 ORIGINAL_IMAGE = '../datasets/NDI_images/Integreted/Observed/'

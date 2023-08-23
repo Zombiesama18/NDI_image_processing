@@ -9,7 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.models import ResNet50_Weights
 
-from dataset import *
+from dataset.dataset import *
 from models.moco_model import MoCo, RetrievalModel
 
 

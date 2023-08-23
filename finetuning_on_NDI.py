@@ -1,10 +1,48 @@
-from train_on_NDI import *
-from wasserstein_loss import distributional_sliced_wasserstein_distance, \
-    distributional_generalized_sliced_wasserstein_distance, max_sliced_wasserstein_distance, \
-    max_generalized_sliced_wasserstein_distance, sliced_wasserstein_distance, generalized_sliced_wasserstein_distance, \
-    circular_function
+import time
+from finetuning_config import Config
+import torch
+import torch.nn as nn
+
+import torchvision.models
+
+from models.vit_model import build_model
+from models.core_model import RetrievalModel
 from models.wd_model import TransformNet, CompositeResNet
-import itertools
+from utils.utils import get_logger, AverageMeter, ProgressMeter, set_all_seeds, cal_accuracy_top_k, load_checkpoints
+import datetime
+import wandb
+from losses.wasserstein_loss import distributional_sliced_wasserstein_distance, distributional_generalized_sliced_wasserstein_distance, \
+            max_generalized_sliced_wasserstein_distance, max_sliced_wasserstein_distance, sliced_wasserstein_distance, \
+            generalized_sliced_wasserstein_distance, circular_function
+from dataset.dataset import SingleChannelNDIDatasetContrastiveLearningWithAug, k_fold_train_validation_split, \
+    ORIGINAL_IMAGE, TARGET_IMAGE, get_CNI_tensor
+from torch.utils.data import DataLoader
+import unicom
+
+
+def init_wandb(args, config=None, **kwargs):
+    if config is None:
+        config = dict()
+    wandb.login(key=args.wandb_key)
+    wandb.init(config=config, **kwargs)
+
+
+def get_model(key_word, pretrained=False):
+    if key_word == 'ResNet50':
+        # Set ResNet50 for clarifying the effectiveness of Code
+        if pretrained:
+            model = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.IMAGENET1K_V2)
+        else:
+            model = torchvision.models.resnet50(weights=None)
+        model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        model.fc = nn.Linear(model.fc.in_features, 512)
+        return model
+    if 'ViT' in key_word:
+        if pretrained:
+            model = unicom.load(key_word)[0]
+        else:
+            model = build_model(key_word)
+        return model
 
 
 def get_wd_loss(first_samples, second_samples, wd_utils, index):
@@ -40,7 +78,7 @@ def get_wd_loss(first_samples, second_samples, wd_utils, index):
 
 
 def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch, total_epoch, target_tensor,
-                wd_utils=None):
+                wd_utils=None, cel_utils=None):
     batch_time = AverageMeter('Batch Time', ':6.3f')
     data_time = AverageMeter('Data Time', ':6.3f')
     train_loss = AverageMeter('Train Loss', ':.4e')
@@ -60,19 +98,21 @@ def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch
     for i, (origin, target, label) in enumerate(train_data):
         data_time.update(time.time() - start)
         origin, target, label = origin.cuda(), target.cuda(), label.cuda()
-        feature_ori, feature_tar = model(origin, target, stage=wd_utils['stage'])
+        feature_ori, feature_tar = model(origin, target, cel_stage=cel_utils['stage'], wd_stage=wd_utils['stage'])
         loss = 0
-        weight = 1
         for j, (em_ori, em_tar) in enumerate(zip(feature_ori, feature_tar)):
             em_ori, em_tar = em_ori.view(em_ori.shape[0], -1), em_tar.view(em_tar.shape[0], -1)
             if j == 0:
                 sim_mat = model.get_similarity_matrix(em_ori, em_tar)
                 loss += criterion(sim_mat, torch.arange(0, origin.size(0)).cuda())
                 loss += criterion(sim_mat.t(), torch.arange(0, origin.size(0)).cuda())
-            elif wd_utils:
-                loss += weight * get_wd_loss(em_ori, em_tar, wd_utils, wd_utils['stage'])
-                weight *= 0.8
-
+            elif j == 1:
+                if cel_utils:
+                    loss += cel_utils['loss_func'](em_ori, em_tar, torch.ones((em_ori.size(0), )).cuda())
+                elif wd_utils:
+                    loss += get_wd_loss(em_ori, em_tar, wd_utils, wd_utils['stage'])
+            elif j == 2:
+                loss += get_wd_loss(em_ori, em_tar, wd_utils, wd_utils['stage'])
         train_loss.update(loss.item(), origin.size(0))
         optimizer.zero_grad()
         loss.backward()
@@ -92,7 +132,7 @@ def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch
             em_ori, em_tar = em_ori[0], em_tar[0]
             sim_mat = model.get_similarity_matrix(em_ori, em_tar)
             loss = criterion(sim_mat, torch.arange(0, origin.size(0)).cuda()) + \
-                   criterion(sim_mat.t(), torch.arange(0, origin.size(0)).cuda())
+                criterion(sim_mat.t(), torch.arange(0, origin.size(0)).cuda())
             em_ori, em_all_tar = model(origin, target_tensor)
             em_ori, em_all_tar = em_ori[0], em_all_tar[0]
             sim_mat = model.get_similarity_matrix(em_ori, em_all_tar)
@@ -109,13 +149,13 @@ def train_epoch(train_data, val_data, model, criterion, optimizer, current_epoch
 
 
 def train(args, logger, train_data, val_data, model, criterion, optimizer, total_epochs, save_folder='./',
-          scheduler=None, wandb_config=None, device=None, wd_utils=None):
+          scheduler=None, wandb_config=None, device=None, wd_utils=None, cel_utils=None):
     target_tensor = get_CNI_tensor(device, 200)
 
     for epoch in range(total_epochs):
         train_loss, val_loss, val_acc_10, val_acc_20, val_acc_30 = \
             train_epoch(train_data, val_data, model, criterion, optimizer, epoch + 1, total_epochs, target_tensor,
-                        wd_utils)
+                        wd_utils, cel_utils)
 
         lr_info = ''
         if scheduler:
@@ -135,8 +175,6 @@ def train(args, logger, train_data, val_data, model, criterion, optimizer, total
 
 def main():
     args = Config()
-    # parser = argparse.ArgumentParser('Fine-tuning on NDI images', parents=[get_args_parser()])
-    # args = parser.parse_args()
 
     device = torch.device(args.device)
 
@@ -147,32 +185,31 @@ def main():
 
     logger.info(f'This training is to do: {args.message_to_log}')
 
-    test_list = itertools.product(['DSWD','MSWD', 'MGSWD', 'SWD', 'GSWD'], [2, 3, 4, 5])
-    # model_list = ['vit_tiny', 'vit_small', 'vit_base', 'vit_large']
+    wd_stage, cel_stage = 2, 2
+
+    test_list = ['MSWD']
 
     for test_item in test_list:
 
-        wd_name, stage = test_item
+        wd_name = test_item
 
         for i, images in enumerate(k_fold_train_validation_split(ORIGINAL_IMAGE, TARGET_IMAGE, 7)):
-            wandb.init(project=args.message_to_log, group=f'{wd_name}_Test',
-                       job_type=f'{wd_name}_stage_{stage}_individual_top_5_10_15_bs_16',
-                       name=f'{wd_name}_stage_{stage}_fold {i}', config=args.__dict__)
+            if args.wandb_key:
+                init_wandb(args=args, config=args.__dict__)
             train_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, False, 200)
             val_dataset = SingleChannelNDIDatasetContrastiveLearningWithAug(images, True, 200)
             train_iter = DataLoader(train_dataset, args.batch_size, shuffle=True, drop_last=True)
             val_iter = DataLoader(val_dataset, batch_size=len(val_dataset))
 
             model = get_model('ResNet50', pretrained=True)
-            model = load_checkpoints(model, './checkpoints/ImageNet_ALL_CHECK_400_Epoch.pth')
-            model = CompositeResNet(model, stage)
+            model = load_checkpoints(model, './checkpoints/ImageNet_ALL_CHECK_400_Epoch.pth')  # Pre-trained NDI image model
+            model = CompositeResNet(model, cel_stage)
             model = RetrievalModel(model)
             model = model.cuda()
 
             optimizer = torch.optim.SGD(params=model.parameters(), lr=args.base_lr, weight_decay=args.weight_decay, momentum=args.momentum)
             criterion = nn.CrossEntropyLoss()
 
-            # scheduler = None
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=args.base_lr * 0.01)
             wd_utils = {}
             if wd_name == 'DSWD':
@@ -184,7 +221,7 @@ def main():
                     'lam': 1
                 }
                 channels = [512, 2048, 1024, 512, 256, 64]
-                transform_net = TransformNet(channels[stage - 1]).to('cuda')
+                transform_net = TransformNet(channels[wd_stage - 1]).to('cuda')
                 optimizer_tran_net = torch.optim.Adam(transform_net.parameters(), lr=0.0005, betas=(0.5, 0.999))
                 wd_utils[f'tran_net'] = transform_net
                 wd_utils[f'op_trannet'] = optimizer_tran_net
@@ -200,7 +237,7 @@ def main():
                     'lam': 1
                 }
                 channels = [512, 2048, 1024, 512, 256, 64]
-                transform_net = TransformNet(channels[stage - 1]).to('cuda')
+                transform_net = TransformNet(channels[wd_stage - 1]).to('cuda')
                 optimizer_tran_net = torch.optim.Adam(transform_net.parameters(), lr=0.0005, betas=(0.5, 0.999))
                 wd_utils[f'tran_net'] = transform_net
                 wd_utils[f'op_trannet'] = optimizer_tran_net
@@ -238,14 +275,21 @@ def main():
                 }
 
             if wd_utils:
-                wd_utils['stage'] = stage
+                wd_utils['stage'] = 2
+            
+            cel_utils = {}
+            cel_utils['loss_func'] = nn.CosineEmbeddingLoss(margin=0.5)
 
+            if cel_utils:
+                cel_utils['stage'] = 2
+            
             train(args, logger, train_iter, val_iter, model, criterion, optimizer, args.epochs, scheduler=scheduler,
-                  save_folder=args.output_dir, wandb_config=True, device=device, wd_utils=wd_utils)
+                  save_folder=args.output_dir, wandb_config=True, device=device, wd_utils=wd_utils, cel_utils=cel_utils)
             wandb.finish()
 
 
 if __name__ == '__main__':
     main()
+
 
 
