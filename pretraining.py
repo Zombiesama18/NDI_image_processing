@@ -1,43 +1,137 @@
-import time
+from dataclasses import dataclass, field
+from typing import Optional
+import logging
+import sys
+
 from dataset.dataset import get_pretraining_image_list, GaussianBlur, GaussNoise, NDIDatasetForPretraining
 from torch import nn
 from torchvision.models import ResNet50_Weights
 import torchvision
 from models.moco_model import MoCo
-import datetime
-from utils.utils import get_logger, AverageMeter, ProgressMeter, str2bool, cal_accuracy_top_k
-from pathlib import Path
-from tqdm import tqdm
+from datetime import datetime
+from utils import HfArgumentParser, set_all_seeds, MetricMeter, AverageMeter, cal_accuracy_top_k
 import torch
 from torchvision import transforms
-from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 import os
-import wandb
-from pretraining_config import Config
 
 
-def init_wandb(args):
-    wandb.login(key=args.wandb_key)
-    wandb.init(project=args.project, name='your_wandb_setting', config=args.__dict__)
+@dataclass
+class Arguments:
+    seed : int = field(
+        default=19981303,
+        metadata={"help": "Random seed"}
+    )
+    
+    epochs : int = field(
+        default=1000,
+        metadata={"help": "Total number of training epochs to perform."},
+    )
+    
+    save_steps : int = field(
+        default=100,
+        metadata={"help": "The number of steps to save checkpoints."}
+    )
+    
+    resume : bool = field(
+        default=False,
+        metadata={"help": "Whether to resume from the latest checkpoint."}
+    )
+    
+    resume_checkpoint : Optional[str] = field(
+        default=None,
+        metadata={"help": "The path of the checkpoint to resume from."}
+    )
+    
+    model : str = field(
+        default="resnet50_imagenet21k",
+        metadata={"help": "The model to be used."}
+    )
+    
+    input_size : int = field(
+        default=200,
+        metadata={"help": "The size of the input image."}
+    )
+    
+    batch_size : int = field(
+        default=128,
+        metadata={"help": "Batch size per GPU/TPU core/CPU for training."},
+    )
 
+    accumulate_step: int = field(
+        default=1,
+        metadata={"help": "Number of updates steps to accumulate before performing a backward/update pass."},
+    )
+    
+    lr : float = field(
+        default=5e-3,
+        metadata={"help": "The initial learning rate for SGD optimizer."},
+    )
+    
+    weight_decay: float = field(
+        default=1e-4,
+        metadata={"help": "Weight decay if we apply some."},
+    )
+    
+    momentum: float = field(
+        default=0.9,
+        metadata={"help": "Momentum of SGD optimizer."},
+    )
+    
+    min_lr : float = field(
+        default=0,
+        metadata={"help": "The minimum learning rate for SGD optimizer."},
+    )
+    
+    warmup_epochs : int = field(
+        default=0,
+        metadata={"help": "Number of epochs to warm up."},
+    )
+    
+    dataset_dir : str = field(
+        default="../datasets/NDI_images/Integreted",
+        metadata={"help": "The directory of the dataset."}
+    )
+    
+    output_dir: str = field(
+        default="./checkpoints",
+        metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
+    )
+    
+    log_dir : str = field(
+        default="./logs/",
+        metadata={"help": "The output directory where the log will be written."}
+    )
+    
+    log_interval: int = field(
+        default=10,
+        metadata={"help": "The number of steps to log"}
+    )
+    
+    device : str = field(
+        default='cuda',
+        metadata={"help": "The device to be used."}
+    )
+    
+    image_mean : float = field(
+        default=0.0877,
+        metadata={"help": "The mean of the image."}
+    )
+    
+    image_std : float = field(
+        default=0.085,
+        metadata={"help": "The std of the image."}
+    )
+    
 
-def train(train_loader, model, criterion, optimizer, epoch):
-    batch_time = AverageMeter('Time', ':6.3f')
-    data_time = AverageMeter('Data', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
-
-    progress = ProgressMeter(len(train_loader), [
-        batch_time, data_time, losses, top1, top5], prefix=f'Epoch: [{epoch}]')
+def train_epoch(args, train_loader, model, criterion, optimizer):
+    losses = AverageMeter(':.4e')
+    top1 = AverageMeter(':6.2f')
+    top5 = AverageMeter(':6.2f')
 
     model.train()
 
-    start = time.time()
-
     for i, images in enumerate(train_loader):
-        data_time.update(time.time() - start)
         x1, x2 = torch.split(images, [images.size(1) // 2, images.size(1) // 2], dim=1)
         x1 = x1.cuda()
         x2 = x2.cuda()
@@ -52,12 +146,14 @@ def train(train_loader, model, criterion, optimizer, epoch):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
-        batch_time.update(time.time() - start)
-        start = time.time()
-
-        if i % 10 == 0:
-            progress.display(i)
+        
+        args.steps += 1
+        
+        if args.steps % args.log_interval == 0:
+            args.logger.info(
+                f'Epoch: {args.current_epoch} / {args.epochs} | Steps: {args.steps} / {len(train_loader)} | loss: {losses.avg} | top1: {top1.avg} | top5: {top5.avg}'
+            )
+        
     return losses.avg, top1.avg, top5.avg
 
 
@@ -99,11 +195,12 @@ def get_raw_model():
     return base_encoder
 
 
-def main():
-    args = Config()
+logger = logging.getLogger(__name__)
 
-    if args.wandb_key:
-        init_wandb(args)
+
+def main():
+    parser = HfArgumentParser([Arguments])
+    args = parser.parse_args_into_dataclasses()[0]
 
     dataset_path = args.dataset_dir
 
@@ -115,7 +212,14 @@ def main():
     batch_size = args.batch_size
     Epochs = args.epochs
 
-    logger = get_logger(args.log_dir + datetime.datetime.now().strftime('%Y%m%d%H%M') + '.log')
+    current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Setup logging
+    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
+        handlers=[logging.StreamHandler(sys.stdout), 
+                  logging.FileHandler(os.path.join(args.log_dir, f"Finetuning_{current_time}.log"))],)
+
+    logger.setLevel(logging.DEBUG)
 
     all_images = get_pretraining_image_list(
         ORIGINAL_IMAGE, EXTRA_IMAGE, TARGET_IMAGE)
@@ -170,15 +274,20 @@ def main():
 
     logger.info('Start Training!')
 
+    args.steps = 0
+    args.logger = logger
+    args.current_epoch = 0
+    training_metrics = MetricMeter(['loss', 'acc1', 'acc5'])
+    
     best_score = 0
     for epoch in range(start_epoch, Epochs):
-        loss, acc1, acc5 = train(all_images_dataloader,
-                                 model, criterion, optimizer, epoch)
+        args.current_epoch += 1
+        loss, acc1, acc5 = train_epoch(args, all_images_dataloader,
+                                 model, criterion, optimizer) 
         logger.info(
                 f'Epoch: {epoch}, loss {loss}, Acc@1 {acc1}, Acc@5 {acc5}, lr {scheduler.get_last_lr()}')
-        if args.wandb_key:
-            wandb.log({'epoch': epoch + 1, 'train/loss': loss, 'train/Acc@1': acc1, 'train/Acc@5': acc5})
-
+        training_metrics.update(['loss', 'acc1', 'acc5'], [loss, acc1, acc5])
+        
         scheduler.step()
         score = acc1 * 2.5 + acc5
         if score > best_score:

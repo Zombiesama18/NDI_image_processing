@@ -1,10 +1,14 @@
+from collections import defaultdict
 import random
+from git import Union
 import torch
 from pathlib import Path
 from torchvision import transforms
 from PIL import Image, ImageFilter
 from torch.utils.data import Dataset
 import numpy as np
+import pandas as pd
+import math
 
 
 ORIGINAL_IMAGE = '../datasets/NDI_images/Integreted/Observed/'
@@ -150,6 +154,79 @@ class NDIDatasetForPretraining(Dataset):
         image2 = self.transforms(image)
         return torch.cat([image1, image2], dim=0)
 
+def create_train_val_dataset(annotation_file, train_transforms=None, val_transforms=None, color_mode='L', ratio=0.15):        
+    
+    df = pd.read_csv(annotation_file)
+    base_path = Path(annotation_file).parent
+    img_grouped_by_class = {}
+    
+    classes = list(set(df['class'].to_list()))
+    class_to_idx = {c: i for i, c in enumerate(classes)}
+    num_classes = len(classes)
+    
+    for idx, row in iter(df.iterrows()):
+        class_name = row['class']
+        angle_label = row['angle'] / 90
+        if class_name not in img_grouped_by_class:
+            img_grouped_by_class[class_name] = []
+        file_path = str(base_path.joinpath(row['img_path']))
+        class_label = class_to_idx[class_name]
+        img_grouped_by_class[class_name].append((file_path, class_label, angle_label))
+
+    class_weights = np.sqrt([df.shape[0] / len(img_grouped_by_class[class_name]) for class_name in img_grouped_by_class.keys()])
+    class_weights = (class_weights / np.sum(class_weights)).tolist()
+    
+    if isinstance(ratio, float):
+        ratio = (1 - ratio, ratio) if ratio < 0.5 else (ratio, 1 - ratio)
+    train_img_list, val_img_list, train_label_list, val_label_list = [], [], [], []
+    for class_name, img_list in img_grouped_by_class.items():
+        if len(img_list) < 2:
+            continue
+        random.shuffle(img_list)
+        val_length = max(1, int(len(img_list) * ratio[1]))
+        val_img_list.extend([item[0] for item in img_list[:val_length]])
+        val_label_list.extend([(item[1], item[2]) for item in img_list[:val_length]])
+        train_img_list.extend([item[0] for item in img_list[val_length:]])
+        train_label_list.extend([(item[1], item[2]) for item in img_list[val_length:]])
+    
+    dataset_attr = {
+        'num_classes': num_classes,
+        'class_to_idx': class_to_idx,
+        'color_mode': color_mode,
+        'weights': class_weights
+    }
+    
+    print(f'Train/Val split: {len(train_img_list)} / {len(val_img_list)}')
+    print(f'split ratio: {(len(train_img_list) / (len(train_img_list) + len(val_img_list)))}' +  
+          f'/ {(len(val_img_list) / (len(train_img_list) + len(val_img_list)))}')
+    
+    return SimpleImageDataset(train_img_list, train_label_list, train_transforms, img_type=color_mode, **dataset_attr), \
+        SimpleImageDataset(val_img_list, val_label_list, val_transforms, img_type=color_mode, **dataset_attr)
+    
+class SimpleImageDataset(Dataset):
+    def __init__(self, images, labels, transforms=None, img_type='L', **kwargs) -> None:
+        super().__init__()
+        self.images = images
+        self.labels = labels
+        self.transforms = transforms
+        self.img_type = img_type
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+    
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        img_path = self.images[idx]
+        img = Image.open(img_path).convert(self.img_type)
+        if self.transforms:
+            img = self.transforms(img)
+        else:
+            to_tensor = transforms.ToTensor()
+            img = to_tensor(img)
+        return img, *self.labels[idx]
+        
+        
 class GaussianBlur:
     def __init__(self, sigma=[0.1, 2.]) -> None:
         self.sigma = sigma

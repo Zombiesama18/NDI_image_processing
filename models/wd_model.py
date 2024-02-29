@@ -42,9 +42,11 @@ class CompositeResNet(nn.Module):
         #         result.append(self.avgpool(outputs[i]))
         result = [outputs[0]]
         if cel_stage:
-            result.append(self.avgpool(outputs[cel_stage - 1]))
+            for stage in cel_stage:
+                result.append(self.avgpool(outputs[stage - 1]))
         if wd_stage:
-            result.append(self.avgpool(outputs[wd_stage - 1]))
+            for stage in wd_stage:
+                result.append(self.avgpool(outputs[stage - 1]))
         if not cel_stage and not wd_stage and stage != 1:
             result.append(self.avgpool(outputs[stage - 1]))
         return result
