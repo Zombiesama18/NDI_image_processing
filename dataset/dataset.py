@@ -172,9 +172,6 @@ def create_train_val_dataset(annotation_file, train_transforms=None, val_transfo
         file_path = str(base_path.joinpath(row['img_path']))
         class_label = class_to_idx[class_name]
         img_grouped_by_class[class_name].append((file_path, class_label, angle_label))
-
-    class_weights = np.sqrt([df.shape[0] / len(img_grouped_by_class[class_name]) for class_name in img_grouped_by_class.keys()])
-    class_weights = (class_weights / np.sum(class_weights)).tolist()
     
     if isinstance(ratio, float):
         ratio = (1 - ratio, ratio) if ratio < 0.5 else (ratio, 1 - ratio)
@@ -192,8 +189,7 @@ def create_train_val_dataset(annotation_file, train_transforms=None, val_transfo
     dataset_attr = {
         'num_classes': num_classes,
         'class_to_idx': class_to_idx,
-        'color_mode': color_mode,
-        'weights': class_weights
+        'color_mode': color_mode
     }
     
     print(f'Train/Val split: {len(train_img_list)} / {len(val_img_list)}')
@@ -219,12 +215,13 @@ class SimpleImageDataset(Dataset):
     def __getitem__(self, idx):
         img_path = self.images[idx]
         img = Image.open(img_path).convert(self.img_type)
+        labels = self.labels[idx]
         if self.transforms:
-            img = self.transforms(img)
+            img, labels = self.transforms(img, labels)
         else:
             to_tensor = transforms.ToTensor()
             img = to_tensor(img)
-        return img, *self.labels[idx]
+        return img, *labels
         
         
 class GaussianBlur:
@@ -249,6 +246,23 @@ class GaussNoise:
             image = torch.clamp(image, 0, 1)
         return image
 
+
+class RandomRotationWithAngle(transforms.RandomRotation):
+    def __init__(self, degrees, expand=False, center=None, fill=32):
+        super(RandomRotationWithAngle, self).__init__(degrees, expand=expand, center=center, fill=fill)
+        self.angle = None
+    
+    def forward(self, img):
+        angle = self.get_params(self.degrees)
+        self.angle = angle
+        return super().forward(img)
+    
+    def get_rotate_angle(self):
+        if not self.angle:
+            print('Please call get_rotate_angle() after calling forward()')
+        output_angle = self.angle
+        self.angle = None
+        return output_angle
 
 def get_CNI_tensor(device=None, target_size=200, img_type='L'):
     transform = transforms.Compose([

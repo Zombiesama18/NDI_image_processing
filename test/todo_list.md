@@ -18,11 +18,16 @@ Class_acc: 83.721, angle_loss: 0.1025
 Class_acc: 90.698, angle_loss: 0.1064
 
 #### Applying the transformations of rotating to the dataset.
+**script: test/test_fourth_time.py**
+**result: wandb -> Sperated-Categories-Angles -> Test-fourth-time-transform-random-rotation**
+Class_acc: 93.023, angle_loss: 0.2613
 
+#### Resample the dataset by rotating the ref images.
 
 #### ToDos
 - [x] Basic implementation
 - [x] Adjust the dataset by splitting the category with only two samples into training and validation data separately.
 - [x] Applying `Focal Loss` for unbalanced dataset.
 - [ ] Resample the dataset by rotating the ref images.
-- [ ] Applying the transformations of rotating to the dataset.
+- [x] Applying the transformations of rotating to the dataset.
+- [ ] Applying the transformations of adding noises spreading from the center to the surroundings
