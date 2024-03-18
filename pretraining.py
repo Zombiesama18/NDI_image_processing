@@ -203,10 +203,18 @@ def main():
     args = parser.parse_args_into_dataclasses()[0]
 
     dataset_path = args.dataset_dir
+    if not os.path.exists(dataset_path):
+        raise ValueError(f"Dataset path {dataset_path} does not exist.")
+    
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    
+    if not os.path.exists(args.log_dir):
+        os.makedirs(args.log_dir)
 
-    ORIGINAL_IMAGE = os.path.join(dataset_path, 'Observed')  # '../../datasets/NDI_images/Integreted/Observed/'
-    EXTRA_IMAGE = os.path.join(dataset_path, 'extra observed', 'cropped')  # '../../datasets/NDI_images/Integreted/extra observed/cropped/'
-    TARGET_IMAGE = os.path.join(dataset_path, 'Calculated')  # '../../datasets/NDI_images/Integreted/Calculated/'
+    ORIGINAL_IMAGE = os.path.join(dataset_path, 'Observed')  # '../datasets/NDI_images/Integreted/Observed/'
+    EXTRA_IMAGE = os.path.join(dataset_path, 'extra observed', 'cropped')  # '../datasets/NDI_images/Integreted/extra observed/cropped/'
+    TARGET_IMAGE = os.path.join(dataset_path, 'Calculated')  # '../datasets/NDI_images/Integreted/Calculated/'
 
     input_size = args.input_size
     batch_size = args.batch_size
@@ -224,7 +232,7 @@ def main():
     all_images = get_pretraining_image_list(
         ORIGINAL_IMAGE, EXTRA_IMAGE, TARGET_IMAGE)
 
-    device = torch.device('cuda')
+    device = torch.device(args.device)
 
     start_epoch = 0
     if not args.resume:
@@ -252,9 +260,9 @@ def main():
         scheduler.load_state_dict(state_dict['scheduler'])
 
     model = MoCo(model, dim=512, K=1024, m=0.999, T=0.2, mlp=False, customized_model=True)
-    model.cuda()
+    model.to(device)
 
-    criterion = nn.CrossEntropyLoss().cuda(device)
+    criterion = nn.CrossEntropyLoss().to(device)
 
     all_mean = args.image_mean
     all_std = args.image_std
@@ -295,14 +303,14 @@ def main():
             save_checkpoint({'epoch': epoch + 1, 'arch': 'ResNet50', 'state_dict': model.state_dict(),
                              'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
                              'norms': [all_mean, all_std]},
-                            filename='./checkpoints/UNICOM_ViT_B_32_based.pth')
+                            filename=os.path.join(args.output_dir, 'pretrained_best.pth'))
             logger.info(
                     f'Save Checkpoint at {epoch + 1} with loss {loss}, Acc@1 {acc1}, Acc@5 {acc5}, score {score}')
         if (epoch + 1) % args.save_steps == 0:
             save_checkpoint({'epoch': epoch + 1, 'arch': 'ResNet50', 'state_dict': model.state_dict(),
                              'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict(),
                              'norms': [all_mean, all_std]},
-                            filename=f'./checkpoints/UNICOM_ViT_B_32_{epoch + 1}_Epoch.pth')
+                            filename=os.path.join(args.output_dir, f'pretrained_{epoch + 1}_Epoch.pth'))
             logger.info(
                     f'Save Checkpoint at {epoch + 1} with loss {loss}, Acc@1 {acc1}, Acc@5 {acc5}, score {score}')
     logger.info('Training Finished!')
