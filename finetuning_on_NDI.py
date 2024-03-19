@@ -147,6 +147,11 @@ class ModelArguments:
         default=10,
         metadata={"help": "The number of steps to log"}
     )
+    
+    pretrained_model_path: str = field(
+        default='./checkpoints/ImageNet_ALL_CHECK_400_Epoch.pth',
+        metadata={"help": "The path of the pretrained model to fine-tune on."}
+    )
 
 
 def get_model(pretrained=False):
