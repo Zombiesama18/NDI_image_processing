@@ -163,33 +163,49 @@ def create_train_val_dataset(annotation_file, train_transforms=None, val_transfo
     classes = list(set(df['class'].to_list()))
     class_to_idx = {c: i for i, c in enumerate(classes)}
     num_classes = len(classes)
+    class_idx_to_cal_refs = {}
     
     for idx, row in iter(df.iterrows()):
         class_name = row['class']
         angle_label = row['angle'] / 90
         if class_name not in img_grouped_by_class:
             img_grouped_by_class[class_name] = []
-        file_path = str(base_path.joinpath(row['img_path']))
+
+        if class_to_idx[class_name] not in class_idx_to_cal_refs:
+            class_idx_to_cal_refs[class_to_idx[class_name]] = str(base_path.joinpath(row['ref_path']))
+        
+        file_path = str(base_path.joinpath(row['observed_paths']))
+        if 'ref.jpg' in file_path:
+            continue
         class_label = class_to_idx[class_name]
         img_grouped_by_class[class_name].append((file_path, class_label, angle_label))
-    
+        
     if isinstance(ratio, float):
         ratio = (1 - ratio, ratio) if ratio < 0.5 else (ratio, 1 - ratio)
+    
     train_img_list, val_img_list, train_label_list, val_label_list = [], [], [], []
+    class_idx_to_obs_refs = {}
+    
     for class_name, img_list in img_grouped_by_class.items():
-        if len(img_list) < 2:
-            continue
+        class_label = class_to_idx[class_name]
+        class_idx_to_obs_refs[class_label] = [(item[0], item[2]) for item in img_list]
+        
+        repeat_times = max(0, 15 - len(img_list))
+        img_list = img_list + [(None, class_to_idx[class_name], None) for _ in range(repeat_times)]
+        
         random.shuffle(img_list)
         val_length = max(1, int(len(img_list) * ratio[1]))
         val_img_list.extend([item[0] for item in img_list[:val_length]])
         val_label_list.extend([(item[1], item[2]) for item in img_list[:val_length]])
         train_img_list.extend([item[0] for item in img_list[val_length:]])
         train_label_list.extend([(item[1], item[2]) for item in img_list[val_length:]])
-    
+        
     dataset_attr = {
         'num_classes': num_classes,
         'class_to_idx': class_to_idx,
-        'color_mode': color_mode
+        'color_mode': color_mode,
+        'class_idx_to_cal_refs': class_idx_to_cal_refs,
+        'class_idx_to_obs_refs': class_idx_to_obs_refs
     }
     
     print(f'Train/Val split: {len(train_img_list)} / {len(val_img_list)}')
@@ -214,8 +230,17 @@ class SimpleImageDataset(Dataset):
     
     def __getitem__(self, idx):
         img_path = self.images[idx]
-        img = Image.open(img_path).convert(self.img_type)
         labels = self.labels[idx]
+        class_label, angle_label = labels
+        if not img_path:
+            ref_path, ref_angle = random.choice(self.class_idx_to_obs_refs[class_label])
+            ref_angle = int(ref_angle * 90)
+            rotate_angle = random.randint(-90 - ref_angle, 89 - ref_angle)
+            img = rotate_and_fill(ref_path, rotate_angle, fill_color=5, img_type=self.img_type)
+            angle_label = rotate_angle + ref_angle
+            labels = (class_label, angle_label / 90)
+        else:
+            img = Image.open(img_path).convert(self.img_type)
         if self.transforms:
             img, labels = self.transforms(img, labels)
         else:
@@ -282,3 +307,17 @@ def get_CNI_tensor(device=None, target_size=200, img_type='L'):
         return target_tensor.to(device)
     return target_tensor
 
+def rotate_and_fill(img_path, angle, fill_color=(32, 32, 32), img_type='L'):
+    img = Image.open(img_path).convert(img_type)
+    rotated_img = img.rotate(angle, expand=True, fillcolor=fill_color)
+    
+    rotated_center = (rotated_img.width / 2, rotated_img.height / 2)
+    
+    left = rotated_center[0] - img.width / 2
+    top = rotated_center[1] - img.height / 2
+    right = rotated_center[0] + img.width / 2
+    bottom = rotated_center[1] + img.height / 2
+    
+    cropped_img = rotated_img.crop((left, top, right, bottom))
+    
+    return cropped_img

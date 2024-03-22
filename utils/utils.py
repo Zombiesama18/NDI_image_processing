@@ -125,12 +125,23 @@ class MetricMeter:
     def to_csv(self, path=None, columns_fmt=None, indices_fmt=None):
         if path is None:
             path = './logs/'
+        if not columns_fmt:
+            columns_fmt = '{}'
+        if not indices_fmt:
+            indices_fmt = '{}'
         
-        for i, name in enumerate(self.metric_names):
-            columns = [columns_fmt.format(i) for i in range(self.metrics[i].shape[1])]
-            indices = [indices_fmt.format(i) for i in range(self.metrics[i].shape[0])]
-            dataframe = pd.DataFrame(self.metrics[i], columns=columns, index=indices)
-            dataframe.to_csv(os.path.join(path, f'{name}.csv'))
+        if all([len(metric.shape) == 1 for metric in self.metrics]):
+            metrics = np.stack(self.metrics, axis=1)
+            columns = self.metric_names
+            indices = [indices_fmt.format(i) for i in range(self.metrics[0].shape[0])]
+            dataframe = pd.DataFrame(metrics, columns=columns, index=indices)
+            dataframe.to_csv(os.path.join(path, 'output.csv'))
+        else:
+            for i, name in enumerate(self.metric_names):
+                columns = [columns_fmt.format(i) for i in range(self.metrics[i].shape[1])]
+                indices = [indices_fmt.format(i) for i in range(self.metrics[i].shape[0])]
+                dataframe = pd.DataFrame(self.metrics[i], columns=columns, index=indices)
+                dataframe.to_csv(os.path.join(path, f'{name}.csv'))
 
 
 class AverageMeter:
