@@ -181,7 +181,7 @@ class AverageMeter:
 
 
 def get_wandb_API_key():
-    return '4d82a00b168aacde462a6aae9d468d23b71d9efa'
+    return 'Your Wandb API Key'
 
 
 def set_all_seeds(seed=29):
