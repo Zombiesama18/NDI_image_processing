@@ -34,8 +34,10 @@ In this experiment, we use the expanded `Observed Images` to test the performanc
 
 The result is surprisingly good with `100%` accuracy of Pattern Prediction and `0.075` loss of Rotation Prediction (MSE Loss), which means that the prediction on matching calculated image to a given observed image can be accurate enough for practical use.
 
+
+
 #### Usage
-*The improvements made by this branch are only for the fine-tuning part of the `final` branch, so the fine-tuning script needs the pretrained model.*
+*The improvements made by this branch are only for the fine-tuning part of the `final` branch, so the fine-tuning script needs the pretrained model. Please make sure that all packages in the `requirements.txt` are installed.*
 
 * Pretraining
   ```bash
