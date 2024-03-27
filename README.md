@@ -21,6 +21,8 @@ This figure shows the NDI image examples in this project. For each given observe
 
 ### Usage
 
+*Please make sure that all packages in `requirements.txt` are installed.*
+
 #### Pretraining
 ```bash
 sh run_pretraining.sh
