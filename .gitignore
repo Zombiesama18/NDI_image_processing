@@ -6,4 +6,5 @@ logs/
 wandb/
 results/
 offline_exec/
+test/
 *.ipynb
